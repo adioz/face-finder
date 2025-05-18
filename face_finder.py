@@ -12,7 +12,7 @@ import pickle
 from dotenv import load_dotenv
 import argparse
 import re
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 from ultralytics import YOLO
 
 # Load environment variables
@@ -22,26 +22,33 @@ load_dotenv()
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 class FaceFinder:
-    def __init__(self, model_selection=1, min_detection_confidence=0.5):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.creds = None
-        self.service = None
-        self.example_faces = []  # List to store face encodings from example folder
-        self.model_selection = model_selection
+    def __init__(self, min_detection_confidence=0.7):
         self.min_detection_confidence = min_detection_confidence
+        self.example_faces = []  # List to store face encodings from example folder
         self.detected_faces_dir = 'detected_faces'
         os.makedirs(self.detected_faces_dir, exist_ok=True)
-        
-        # Initialize YOLO face detection model
-        self.face_detector = YOLO('yolov8s-face.pt')
-        
+
+        # Initialize YOLOv8 model
+        print("Loading YOLOv8 model...")
+        self.face_detector = YOLO('yolov8x.pt')  # Use the largest model for best accuracy
+        print("Model loaded successfully!")
+
+        # Initialize MediaPipe Face Mesh for encoding
+        self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_detection_confidence
+        )
+
+        self.creds = None
+        self.service = None
+
     def authenticate(self):
         """Authenticate with Google Drive API."""
         if os.path.exists('token.pickle'):
             with open('token.pickle', 'rb') as token:
                 self.creds = pickle.load(token)
-                
         if not self.creds or not self.creds.valid:
             if self.creds and self.creds.expired and self.creds.refresh_token:
                 self.creds.refresh(Request())
@@ -49,12 +56,10 @@ class FaceFinder:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     'credentials.json', SCOPES)
                 self.creds = flow.run_local_server(port=0)
-                
             with open('token.pickle', 'wb') as token:
                 pickle.dump(self.creds, token)
-                
         self.service = build('drive', 'v3', credentials=self.creds)
-    
+
     def extract_folder_id(self, folder_url):
         """Extract folder ID from Google Drive URL."""
         match = re.search(r'/folders/([a-zA-Z0-9_-]+)', folder_url)
@@ -78,62 +83,65 @@ class FaceFinder:
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
-        while done is False:
+        while not done:
             status, done = downloader.next_chunk()
         fh.seek(0)
         return fh
     
     def get_face_encoding(self, image: np.ndarray, face_location: Tuple[int, int, int, int]) -> np.ndarray:
-        """Extract face encoding using MediaPipe Face Mesh."""
+        """Extract face encoding using MediaPipe Face Mesh with improved cropping."""
         x, y, w, h = face_location
-        face_image = image[y:y+h, x:x+w]
+        # Expand the bounding box by 20%
+        margin = 0.2
+        x_new = max(0, x - int(w * margin))
+        y_new = max(0, y - int(h * margin))
+        w_new = min(image.shape[1] - x_new, w + int(w * margin * 2))
+        h_new = min(image.shape[0] - y_new, h + int(h * margin * 2))
+        face_crop = image[y_new:y_new+h_new, x_new:x_new+w_new]
         
-        with self.mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            min_detection_confidence=self.min_detection_confidence
-        ) as face_mesh:
-            results = face_mesh.process(cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB))
-            
-            if results.multi_face_landmarks:
-                landmarks = results.multi_face_landmarks[0].landmark
-                # Convert landmarks to a flat array of coordinates
-                encoding = np.array([[lm.x, lm.y, lm.z] for lm in landmarks]).flatten()
-                return encoding
+        # Resize to a consistent aspect ratio (1:1)
+        face_crop = cv2.resize(face_crop, (224, 224))
+        
+        # Convert to RGB for MediaPipe
+        face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+        
+        results = self.face_mesh.process(face_crop)
+        
+        if results.multi_face_landmarks:
+            landmarks = results.multi_face_landmarks[0].landmark
+            # Convert landmarks to a flat array of coordinates
+            encoding = np.array([[lm.x, lm.y, lm.z] for lm in landmarks]).flatten()
+            return encoding
         return None
     
-    def compare_faces(self, face_encoding1: np.ndarray, face_encoding2: np.ndarray, tolerance: float = 0.8) -> bool:
-        """Compare two face encodings and return True if they match."""
+    def compare_faces(self, face_encoding1: np.ndarray, face_encoding2: np.ndarray, tolerance: float = 0.7) -> bool:
+        """Compare two face encodings using cosine similarity and return True if they match."""
         if face_encoding1 is None or face_encoding2 is None:
             return False
-        # Calculate Euclidean distance between encodings
-        distance = np.linalg.norm(face_encoding1 - face_encoding2)
-        return distance < tolerance
+        # Normalize the encodings
+        face_encoding1_norm = face_encoding1 / np.linalg.norm(face_encoding1)
+        face_encoding2_norm = face_encoding2 / np.linalg.norm(face_encoding2)
+        # Calculate cosine similarity
+        similarity = np.dot(face_encoding1_norm, face_encoding2_norm)
+        print(f"Cosine similarity: {similarity:.4f}, Threshold: {tolerance}")
+        return similarity > tolerance
     
     def detect_and_encode_faces(self, image_data, prefix="") -> Tuple[np.ndarray, List[Tuple[int, int, int, int]], List[np.ndarray]]:
-        """Detect faces in an image and return the image, face locations, and encodings."""
-        # Convert bytes to numpy array
         nparr = np.frombuffer(image_data.read(), np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
         if image is None:
             print("Error: Could not decode image")
             return None, [], []
-            
-        # Convert the BGR image to RGB for YOLO
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
         face_locations = []
         face_encodings = []
         
-        # Run YOLO face detection
-        results = self.face_detector(image_rgb)
+        # Run YOLOv8 detection
+        results = self.face_detector(image_rgb, classes=[0])  # class 0 is person in COCO dataset
         
         if results[0].boxes:
             print(f"Found {len(results[0].boxes)} face(s) in the image")
-            
             for idx, box in enumerate(results[0].boxes):
-                # Get bounding box coordinates
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 confidence = float(box.conf[0])
                 
@@ -141,7 +149,6 @@ class FaceFinder:
                     width = x2 - x1
                     height = y2 - y1
                     face_location = (x1, y1, width, height)
-                    
                     print(f"  Face {idx+1}: (x={x1}, y={y1}, w={width}, h={height}), confidence={confidence:.2f}")
                     
                     # Save cropped face for inspection
@@ -160,8 +167,6 @@ class FaceFinder:
                     
                     # Draw rectangle
                     cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    
-                    # Draw confidence score
                     cv2.putText(image, f"{confidence:.2f}", (x1, y1 - 10),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         else:
@@ -226,6 +231,7 @@ class FaceFinder:
                             cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 255), 2)
                             cv2.putText(image, f"Match #{k+1}", (x, y - 10),
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                            print(f"Match found: Scan face {j+1} matches Example face {k+1}")
                             matches_found = True
                 
                 # Save processed image
@@ -242,11 +248,10 @@ def main():
     parser = argparse.ArgumentParser(description='Process Google Drive folders for face detection and matching.')
     parser.add_argument('--example-folder', required=True, help='URL or ID of the example folder')
     parser.add_argument('--scan-folder', required=True, help='URL or ID of the folder to scan')
-    parser.add_argument('--model-selection', type=int, default=1, help='MediaPipe model selection: 0=short-range, 1=full-range (default: 1)')
     parser.add_argument('--min-detection-confidence', type=float, default=0.5, help='Minimum detection confidence for face detection (default: 0.5)')
     args = parser.parse_args()
     
-    face_finder = FaceFinder(model_selection=args.model_selection, min_detection_confidence=args.min_detection_confidence)
+    face_finder = FaceFinder(min_detection_confidence=args.min_detection_confidence)
     face_finder.process_folders(args.example_folder, args.scan_folder)
 
 if __name__ == "__main__":
