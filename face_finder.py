@@ -231,7 +231,7 @@ class FaceFinder:
                             cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 255), 2)
                             cv2.putText(image, f"Match #{k+1}", (x, y - 10),
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                            print(f"Match found: Scan face {j+1} matches Example face {k+1}")
+                            print(f"Match found: Scan face {j+1} in {file['name']} matches Example face {k+1} in {example_files[k]['name']}")
                             matches_found = True
                 
                 # Save processed image
