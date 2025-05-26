@@ -1,0 +1,12 @@
+google-api-python-client==2.108.0
+google-auth-httplib2==0.1.1
+google-auth-oauthlib==1.1.0
+opencv-python==4.8.1.78
+numpy==1.24.3
+python-dotenv==1.0.0
+pillow>=10.0.0
+pillow-heif>=0.13.0
+ultralytics>=8.0.0
+mediapipe>=0.10.0
+insightface>=0.7.3
+onnxruntime>=1.15.1 
