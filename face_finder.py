@@ -82,12 +82,26 @@ class FaceFinder:
         
         self.min_detection_confidence = min_detection_confidence
         self.sample_faces = []  # List to store face encodings from sample folder
-        self.detected_faces_dir = 'detected_faces'
         self.use_local = use_local
-        os.makedirs(self.detected_faces_dir, exist_ok=True)
+
+        # Create output directory structure
+        self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_dir = Path('outputs') / f'run_{self.run_timestamp}'
+        self.detected_faces_dir = self.output_dir / 'detected_faces'
+        self.processed_photos_dir = self.output_dir / 'processed_photos'
+        
+        # Create all necessary directories
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.detected_faces_dir.mkdir(exist_ok=True)
+        self.processed_photos_dir.mkdir(exist_ok=True)
+        
+        print(f"\nCreated output directory structure:")
+        print(f"  - Main output directory: {self.output_dir}")
+        print(f"  - Detected faces directory: {self.detected_faces_dir}")
+        print(f"  - Processed photos directory: {self.processed_photos_dir}\n")
 
         # Initialize YOLOv8 model
-        print("\nInitializing YOLOv8 face detection model...")
+        print("Initializing YOLOv8 face detection model...")
         self.face_detector = YOLO('yolov8n-face.pt')  # Use face detection model
         print(f"Model loaded successfully!")
         print(f"Model info: {self.face_detector.model.names}")
@@ -303,14 +317,9 @@ class FaceFinder:
         if not self.service and not self.use_local:
             self.authenticate()
             
-        # Create output directories if they don't exist
-        processed_photos_dir = Path('processed_photos')
-        processed_photos_dir.mkdir(exist_ok=True)
-        print(f"Created/verified processed_photos directory at: {processed_photos_dir.absolute()}")
-        
         # Create subdirectories for samples and dataset
-        samples_output_dir = processed_photos_dir / 'samples'
-        dataset_output_dir = processed_photos_dir / 'dataset'
+        samples_output_dir = self.processed_photos_dir / 'samples'
+        dataset_output_dir = self.processed_photos_dir / 'dataset'
         samples_output_dir.mkdir(exist_ok=True)
         dataset_output_dir.mkdir(exist_ok=True)
         print(f"Created/verified output directories:")
