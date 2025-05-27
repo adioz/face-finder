@@ -6,6 +6,7 @@ numpy==1.24.3
 python-dotenv==1.0.0
 pillow>=10.0.0
 pillow-heif>=0.13.0
+# YOLOv8 face detection model
 ultralytics>=8.0.0
 mediapipe>=0.10.0
 insightface>=0.7.3

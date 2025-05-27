@@ -19,6 +19,9 @@ from pillow_heif import register_heif_opener
 from PIL import Image
 import insightface
 from insightface.app import FaceAnalysis
+import sys
+from datetime import datetime
+import logging
 
 # Register HEIF opener with PIL
 register_heif_opener()
@@ -29,29 +32,87 @@ load_dotenv()
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
+class TeeLogger:
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, 'a', encoding='utf-8')
+        self.closed = False
+        self.write("\n" + "="*80 + "\n")
+        self.write("NEW SESSION STARTED\n")
+        self.write("="*80 + "\n\n")
+
+    def write(self, message):
+        if message.strip() and not self.closed:  # Only log non-empty messages
+            # Ensure message ends with a newline
+            if not message.endswith('\n'):
+                message += '\n'
+            self.terminal.write(message)
+            try:
+                self.log.write(message)
+                self.log.flush()
+            except ValueError:
+                # If file is closed, just write to terminal
+                pass
+
+    def flush(self):
+        if not self.closed:
+            self.terminal.flush()
+            try:
+                self.log.flush()
+            except ValueError:
+                pass
+
+    def close(self):
+        if not self.closed:
+            self.write("\n" + "="*80 + "\n")
+            self.write("SESSION ENDED\n")
+            self.write("="*80 + "\n\n")
+            self.log.close()
+            self.closed = True
+
 class FaceFinder:
     def __init__(self, min_detection_confidence=0.5, use_local=False):
+        # Create logs directory if it doesn't exist
+        os.makedirs('logs', exist_ok=True)
+        
+        # Set up logging
+        log_filename = f'logs/face_finder_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        self.logger = TeeLogger(log_filename)
+        sys.stdout = self.logger
+        
         self.min_detection_confidence = min_detection_confidence
-        self.example_faces = []  # List to store face encodings from example folder
+        self.sample_faces = []  # List to store face encodings from sample folder
         self.detected_faces_dir = 'detected_faces'
         self.use_local = use_local
         os.makedirs(self.detected_faces_dir, exist_ok=True)
 
         # Initialize YOLOv8 model
-        print("Loading YOLOv8 face detection model...")
+        print("\nInitializing YOLOv8 face detection model...")
         self.face_detector = YOLO('yolov8n-face.pt')  # Use face detection model
-        print("Model loaded successfully!")
+        print(f"Model loaded successfully!")
+        print(f"Model info: {self.face_detector.model.names}")
+        print(f"Model path: {self.face_detector.model.pt_path}\n")
 
         # Initialize InsightFace
-        print("Loading InsightFace model...")
+        print("Initializing InsightFace model...")
         self.face_analyzer = FaceAnalysis(name='buffalo_l', root='.')
         self.face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
         print("InsightFace model loaded successfully!")
+        print("Model details:")
+        print(f"  - Model name: buffalo_l")
+        print(f"  - Detection size: 640x640")
+        print(f"  - Available models: {list(self.face_analyzer.models.keys())}\n")
 
         self.creds = None
         self.service = None
         if not use_local:
             self.authenticate()
+
+    def __del__(self):
+        # Close the logger when the object is destroyed
+        if hasattr(self, 'logger'):
+            self.logger.close()
+            sys.stdout = self.logger.terminal
 
     def authenticate(self):
         """Authenticate with Google Drive API."""
@@ -133,6 +194,7 @@ class FaceFinder:
     def get_face_encoding(self, image: np.ndarray, face_location: Tuple[int, int, int, int]) -> np.ndarray:
         """Extract face encoding using InsightFace."""
         x, y, w, h = face_location
+        
         # Expand the bounding box by 20%
         margin = 0.2
         x_new = max(0, x - int(w * margin))
@@ -144,13 +206,22 @@ class FaceFinder:
         # Convert to RGB for InsightFace
         face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
         
-        # Get face embedding using InsightFace
-        faces = self.face_analyzer.get(face_crop)
-        if faces:
-            return faces[0].embedding
-        return None
+        try:
+            # Get face embedding using InsightFace
+            faces = self.face_analyzer.get(face_crop)
+            if faces:
+                print(f"    Successfully encoded face: {w}x{h} pixels (expanded to {w_new}x{h_new})")
+                return faces[0].embedding
+            else:
+                print(f"    No face detected in cropped region: {w_new}x{h_new} pixels")
+                return None
+        except Exception as e:
+            print(f"    Error during face encoding: {str(e)}")
+            return None
 
-    def compare_faces(self, face_encoding1: np.ndarray, face_encoding2: np.ndarray, threshold: float = 0.5) -> Tuple[bool, float]:
+    def compare_faces(self, face_encoding1: np.ndarray, face_encoding2: np.ndarray, threshold: float = 0.5, 
+                     scan_face_idx: int = None, scan_image: str = None, 
+                     sample_image: str = None) -> Tuple[bool, float]:
         """Compare two face encodings using cosine similarity."""
         if face_encoding1 is None or face_encoding2 is None:
             return False, 0.0
@@ -158,31 +229,34 @@ class FaceFinder:
         # Calculate cosine similarity
         similarity = np.dot(face_encoding1, face_encoding2) / (np.linalg.norm(face_encoding1) * np.linalg.norm(face_encoding2))
         
-        # Print detailed comparison info
-        print(f"Face comparison - Similarity: {similarity:.4f}, Threshold: {threshold}")
+        # Print detailed comparison info with context
+        context = f"Scan face {scan_face_idx} in {scan_image} vs Sample from {sample_image}"
+        print(f"{context} - Similarity: {similarity:.4f}, Threshold: {threshold}")
         
         return similarity > threshold, similarity
 
     def detect_and_encode_faces(self, image_data, prefix="") -> Tuple[np.ndarray, List[Tuple[int, int, int, int]], List[np.ndarray]]:
         try:
-            print(f"\nProcessing image {prefix}")
+            print(f"\nProcessing image: {prefix}")
+            print("-" * 50)
+            
             nparr = np.frombuffer(image_data.read(), np.uint8)
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if image is None:
                 print(f"Error: Could not decode image for {prefix}")
                 return None, [], []
             
-            print(f"Successfully decoded image {prefix} with shape {image.shape}")
+            print(f"Successfully decoded image with shape {image.shape}")
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             face_locations = []
             face_encodings = []
             
             # Run YOLOv8 face detection
-            print(f"Running YOLOv8 face detection on {prefix}")
+            print("\nRunning YOLOv8 face detection...")
             results = self.face_detector(image_rgb)
             
             if results[0].boxes:
-                print(f"Found {len(results[0].boxes)} face(s) in the image {prefix}")
+                print(f"Found {len(results[0].boxes)} face(s) in the image")
                 for idx, box in enumerate(results[0].boxes):
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     confidence = float(box.conf[0])
@@ -191,14 +265,16 @@ class FaceFinder:
                         width = x2 - x1
                         height = y2 - y1
                         face_location = (x1, y1, width, height)
-                        print(f"  Face {idx+1}: (x={x1}, y={y1}, w={width}, h={height}), confidence={confidence:.2f}")
+                        print(f"\nFace {idx+1}:")
+                        print(f"  - Location: (x={x1}, y={y1}, w={width}, h={height})")
+                        print(f"  - Confidence: {confidence:.2f}")
                         
                         # Save cropped face for inspection
                         face_crop = image[max(y1,0):max(y1,0)+height, max(x1,0):max(x1,0)+width]
                         if face_crop.size > 0:
                             crop_path = os.path.join(self.detected_faces_dir, f"{prefix}_face_{idx+1}.jpg")
                             cv2.imwrite(crop_path, face_crop)
-                            print(f"    Cropped face saved to {crop_path}")
+                            print(f"  - Cropped face saved to: {crop_path}")
                         
                         face_locations.append(face_location)
                         
@@ -206,23 +282,23 @@ class FaceFinder:
                         face_encoding = self.get_face_encoding(image, face_location)
                         if face_encoding is not None:
                             face_encodings.append(face_encoding)
-                            print(f"    Successfully encoded face {idx+1}")
+                            print("  - Face encoding successful")
                         else:
-                            print(f"    Failed to encode face {idx+1}")
+                            print("  - Face encoding failed")
                         
                         # Draw rectangle
                         cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(image, f"{confidence:.2f}", (x1, y1 - 10),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             else:
-                print(f"No faces found in the image {prefix}")
+                print("No faces found in the image")
                     
             return image, face_locations, face_encodings
         except Exception as e:
             print(f"Error processing image {prefix}: {str(e)}")
             return None, [], []
     
-    def process_folders(self, example_folder_path, scan_folder_path):
+    def process_folders(self, sample_folder_path, scan_folder_path):
         """Process images from folders and find matching faces."""
         if not self.service and not self.use_local:
             self.authenticate()
@@ -242,23 +318,23 @@ class FaceFinder:
         print(f"  - Dataset: {dataset_output_dir.absolute()}")
         
         # Extract folder IDs
-        example_folder_id = self.extract_folder_id(example_folder_path)
+        sample_folder_id = self.extract_folder_id(sample_folder_path)
         scan_folder_id = self.extract_folder_id(scan_folder_path)
         
         # Get files from both folders
-        example_files = self.list_files_in_folder(example_folder_id)
+        sample_files = self.list_files_in_folder(sample_folder_id)
         scan_files = self.list_files_in_folder(scan_folder_id)
         
-        print(f"Found {len(example_files)} images in example folder")
+        print(f"Found {len(sample_files)} images in sample folder")
         print(f"Found {len(scan_files)} images in scan folder")
         
-        # Process example folder images and collect face encodings
-        print("\nProcessing example folder images:")
-        for i, file in enumerate(example_files):
-            print(f"\nProcessing example image {i+1}/{len(example_files)}: {file['name']}")
+        # Process sample folder images and collect face encodings
+        print("\nProcessing sample folder images:")
+        for i, file in enumerate(sample_files):
+            print(f"\nProcessing sample image {i+1}/{len(sample_files)}: {file['name']}")
             try:
                 image_data = self.download_file(file['id'])
-                prefix = f"example_{file['name']}"
+                prefix = f"sample_{file['name']}"
                 image, face_locations, face_encodings = self.detect_and_encode_faces(image_data, prefix=prefix)
                 
                 if image is not None:
@@ -274,14 +350,14 @@ class FaceFinder:
                     if face_encodings:
                         # Store face encodings with their source image name
                         for encoding in face_encodings:
-                            self.example_faces.append((encoding, file['name']))
+                            self.sample_faces.append((encoding, file['name']))
                         print(f"Added {len(face_encodings)} face encodings from this image")
                 else:
                     print(f"Failed to process image {file['name']}")
             except Exception as e:
-                print(f"Error processing example image {file['name']}: {str(e)}")
+                print(f"Error processing sample image {file['name']}: {str(e)}")
         
-        print(f"\nCollected {len(self.example_faces)} face encodings from example folder")
+        print(f"\nCollected {len(self.sample_faces)} face encodings from sample folder")
         
         # Process scan folder images and find matches
         print("\nProcessing scan folder images:")
@@ -294,25 +370,30 @@ class FaceFinder:
                 image, face_locations, face_encodings = self.detect_and_encode_faces(image_data, prefix=prefix)
                 
                 if image is not None:
-                    # Check for matches with example faces
+                    # Check for matches with sample faces
                     for j, scan_encoding in enumerate(face_encodings):
                         best_match = None
                         best_similarity = 0
                         
-                        for k, (example_encoding, example_name) in enumerate(self.example_faces):
-                            is_match, similarity = self.compare_faces(scan_encoding, example_encoding)
+                        for k, (sample_encoding, sample_name) in enumerate(self.sample_faces):
+                            is_match, similarity = self.compare_faces(
+                                scan_encoding, sample_encoding,
+                                scan_face_idx=j+1,
+                                scan_image=file['name'],
+                                sample_image=sample_name
+                            )
                             if similarity > best_similarity:
                                 best_similarity = similarity
-                                best_match = (k, example_name)
+                                best_match = (k, sample_name)
                         
                         if best_match and best_similarity > 0.5:  # Lowered threshold for matching
-                            k, example_name = best_match
+                            k, sample_name = best_match
                             # Draw red rectangle for matching faces
                             x, y, w, h = face_locations[j]
                             cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                            cv2.putText(image, f"Match: {example_name} ({best_similarity:.2f})", 
+                            cv2.putText(image, f"Match: {sample_name} ({best_similarity:.2f})", 
                                       (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                            print(f"Match found: Scan face {j+1} in {file['name']} matches Example face from {example_name} (similarity: {best_similarity:.4f})")
+                            print(f"Match found: Scan face {j+1} in {file['name']} matches Sample face from {sample_name} (similarity: {best_similarity:.4f})")
                             matches_found = True
                     
                     # Save processed image
