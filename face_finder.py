@@ -504,6 +504,8 @@ class FaceFinder:
         else:
             print("\nINFO: No matching faces were found in the dataset folder based on the provided samples and threshold.")
 
+        return match_summary # Return the collected summary
+
 def main():
     parser = argparse.ArgumentParser(description='Process folders for face detection and matching.')
     parser.add_argument('--samples', required=True, help='Path or URL/ID of the folder containing sample faces')
@@ -525,7 +527,22 @@ def main():
         # If we want to make it configurable via CLI arg like min_detection_confidence,
         # it would need to be passed to compare_faces, likely through process_folders or as a member.
         # For now, the default 0.5 in compare_faces is used. The `recognition-threshold` arg added is for future use.
-        face_finder.process_folders(args.samples, args.dataset)
+        match_summary = face_finder.process_folders(args.samples, args.dataset)
+
+        if match_summary:
+            print("\n--- Match Summary ---")
+            for match in match_summary:
+                print(f"  Dataset Image: {match['dataset_image_name']}")
+                print(f"    Matched Sample: {match['sample_image_name']}")
+                print(f"    Similarity: {match['similarity_score']:.4f}")
+                print(f"    Face Location in Dataset Image: {match['scan_face_location']}")
+                print(f"    Processed Dataset Image Path: {match['processed_dataset_image_path']}")
+                print("-" * 20)
+        else:
+            # This message might be redundant if process_folders already prints a similar one,
+            # but it confirms the summary status from the return value.
+            print("\nNo matches to summarize based on process_folders return.")
+
     except RuntimeError as e:
         print(f"A critical error occurred: {e}", file=sys.stderr) # Print critical errors to actual stderr
         # sys.exit(1) # Optionally exit for CLI if critical errors occur
