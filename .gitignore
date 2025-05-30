@@ -1,0 +1,38 @@
+# Python general
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.eggs/
+*.egg-info/
+*.egg
+
+# Logging
+*.log
+logs/
+
+# Application specific
+outputs/
+.insightface/
+# Models (if downloaded locally and not managed by a package manager)
+yolov8n-face.pt
+# Credentials and tokens (IMPORTANT: ensure these are not committed)
+token.pickle
+credentials.json
+
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
