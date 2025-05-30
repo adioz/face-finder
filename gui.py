@@ -98,6 +98,7 @@ def main():
     # Bind selection in Listbox to display function
     image_listbox.bind('<<ListboxSelect>>', lambda event: on_image_select(event, image_listbox, image_display_label))
 
+    root.mainloop()
 
 def select_folder(entry_widget):
     folder_path = filedialog.askdirectory()
@@ -244,9 +245,6 @@ def start_processing_thread(sample_entry, dataset_entry, confidence_spinbox,
         button_widget.config(state=tk.NORMAL)
         log_widget.insert(tk.END, "Processing attempt ended.\n")
         log_widget.see(tk.END)
-
-    # Start the Tkinter event loop
-    root.mainloop()
 
 if __name__ == "__main__":
     main()
